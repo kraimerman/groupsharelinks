@@ -12,6 +12,7 @@ import {
   addDoc,
   serverTimestamp,
   Timestamp,
+  setDoc
 } from 'firebase/firestore';
 import {
   signInWithEmailAndPassword,
@@ -46,6 +47,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
         userProfile,
         error: null 
       });
+
+      // Load user's groups
+      const groupsQuery = query(
+        collection(db, 'groups'),
+        where('memberEmails', 'array-contains', email)
+      );
+      const groupsSnapshot = await getDocs(groupsQuery);
+      const groups = groupsSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+
+      set({ groups });
     } catch (error) {
       set({ error: (error as Error).message });
       throw error;
@@ -61,11 +75,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         createdAt: Date.now(),
       };
       
+      // Create user document
       await setDoc(doc(db, 'users', email), userProfile);
       
       set({
         user: userCredential.user,
         userProfile,
+        groups: [], // Initialize with empty groups for new user
         error: null
       });
     } catch (error) {
