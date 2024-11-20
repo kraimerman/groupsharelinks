@@ -1,27 +1,21 @@
 import React, { useEffect } from 'react';
 import { useChatStore } from './store';
-import { onAuthStateChanged } from 'firebase/auth';
-import { auth } from './lib/firebase';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
 import AuthScreen from './components/AuthScreen';
 import UserProfile from './components/UserProfile';
 
 function App() {
-  const { user, loading } = useChatStore();
+  const { user, loading, init } = useChatStore();
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (!user) {
-        useChatStore.setState({ user: null, loading: false });
+    const unsubscribe = init();
+    return () => {
+      if (typeof unsubscribe === 'function') {
+        unsubscribe();
       }
-    });
-
-    // Initialize loading as false after auth check
-    useChatStore.setState({ loading: false });
-
-    return () => unsubscribe();
-  }, []);
+    };
+  }, [init]);
 
   if (loading) {
     return (

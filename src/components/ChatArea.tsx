@@ -19,7 +19,7 @@ export default function ChatArea() {
   if (!activeGroup || !user) return null;
 
   // Sort links by popularity (upvotes - downvotes)
-  const sortedLinks = [...activeGroup.links].sort((a, b) => {
+  const sortedLinks = [...(activeGroup.links || [])].sort((a, b) => {
     const aScore = (a.votes.up.length - a.votes.down.length);
     const bScore = (b.votes.up.length - b.votes.down.length);
     return bScore - aScore;

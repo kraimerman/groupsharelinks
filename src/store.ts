@@ -1,32 +1,8 @@
 import { create } from 'zustand';
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  updateDoc,
-  arrayUnion,
-  arrayRemove,
-  query,
-  where,
-  addDoc,
-  serverTimestamp,
-  Timestamp,
-  setDoc
-} from 'firebase/firestore';
-import {
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  signOut,
-} from 'firebase/auth';
+import { ChatState } from './types';
 import { auth, db } from './lib/firebase';
-import { ChatState, UserProfile, Link } from './types';
-
-const checkAuth = () => {
-  const user = auth.currentUser;
-  if (!user) throw new Error('User not authenticated');
-  return user;
-};
+import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
+import { doc, getDoc, collection, query, where, getDocs, addDoc, setDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 
 export const useChatStore = create<ChatState>((set, get) => ({
   user: null,
@@ -36,30 +12,58 @@ export const useChatStore = create<ChatState>((set, get) => ({
   groups: [],
   activeGroupId: null,
 
+  init: () => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        set({ user: null, userProfile: null, loading: false });
+        return;
+      }
+
+      try {
+        // Get user profile
+        const userDoc = await getDoc(doc(db, 'users', user.email!));
+        const userProfile = userDoc.data();
+
+        // Get user's groups
+        const groupsQuery = query(
+          collection(db, 'groups'),
+          where('memberEmails', 'array-contains', user.email)
+        );
+        const groupsSnapshot = await getDocs(groupsQuery);
+        const groups = groupsSnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+
+        set({ 
+          user,
+          userProfile,
+          groups,
+          loading: false,
+          error: null
+        });
+      } catch (error) {
+        set({ 
+          error: (error as Error).message,
+          loading: false
+        });
+      }
+    });
+
+    return unsubscribe;
+  },
+
   signIn: async (email: string, password: string) => {
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       const userDoc = await getDoc(doc(db, 'users', userCredential.user.email!));
-      const userProfile = userDoc.data() as UserProfile;
+      const userProfile = userDoc.data();
       
       set({ 
         user: userCredential.user,
         userProfile,
         error: null 
       });
-
-      // Load user's groups
-      const groupsQuery = query(
-        collection(db, 'groups'),
-        where('memberEmails', 'array-contains', email)
-      );
-      const groupsSnapshot = await getDocs(groupsQuery);
-      const groups = groupsSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-
-      set({ groups });
     } catch (error) {
       set({ error: (error as Error).message });
       throw error;
@@ -69,19 +73,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
   signUp: async (email: string, password: string, nickname: string) => {
     try {
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      const userProfile: UserProfile = {
+      const userProfile = {
         email,
-        nickname,
+        nickname: nickname.trim(),
         createdAt: Date.now(),
       };
       
-      // Create user document
       await setDoc(doc(db, 'users', email), userProfile);
       
       set({
         user: userCredential.user,
         userProfile,
-        groups: [], // Initialize with empty groups for new user
+        groups: [],
         error: null
       });
     } catch (error) {
@@ -107,11 +110,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   updateProfile: async (nickname: string) => {
-    const user = checkAuth();
+    const { user, userProfile } = get();
+    if (!user || !userProfile) throw new Error('User not authenticated');
+
     try {
       await updateDoc(doc(db, 'users', user.email!), { nickname });
       set(state => ({
-        userProfile: state.userProfile ? { ...state.userProfile, nickname } : null,
+        userProfile: { ...state.userProfile!, nickname },
         error: null
       }));
     } catch (error) {
@@ -120,24 +125,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  setActiveGroup: (groupId: string | null) => {
+  setActiveGroup: (groupId) => {
     set({ activeGroupId: groupId });
   },
 
   addGroup: async (name: string) => {
-    const user = checkAuth();
-    try {
-      const userDoc = await getDoc(doc(db, 'users', user.email!));
-      const userProfile = userDoc.data() as UserProfile;
+    const { user, userProfile } = get();
+    if (!user || !userProfile) throw new Error('User not authenticated');
 
+    try {
       const groupData = {
-        name,
-        avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random`,
+        name: name.trim(),
+        avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(name.trim())}&background=random`,
         createdBy: user.email,
         memberEmails: [user.email],
-        members: [userProfile],
         links: [],
-        createdAt: serverTimestamp(),
+        createdAt: Date.now()
       };
 
       const groupRef = await addDoc(collection(db, 'groups'), groupData);
@@ -154,19 +157,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  updateGroupName: async (groupId: string, name: string) => {
-    checkAuth();
+  addMember: async (groupId: string, email: string) => {
+    const { user } = get();
+    if (!user) throw new Error('User not authenticated');
+
     try {
+      const userDoc = await getDoc(doc(db, 'users', email));
+      if (!userDoc.exists()) throw new Error('User not found');
+
       const groupRef = doc(db, 'groups', groupId);
       await updateDoc(groupRef, {
-        name,
-        avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random`,
+        memberEmails: arrayUnion(email)
       });
-      
+
       set(state => ({
-        groups: state.groups.map(g => 
-          g.id === groupId 
-            ? { ...g, name, avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random` }
+        groups: state.groups.map(g =>
+          g.id === groupId
+            ? {
+                ...g,
+                memberEmails: [...g.memberEmails, email]
+              }
             : g
         ),
         error: null
@@ -177,27 +187,69 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  addMember: async (groupId: string, email: string) => {
-    checkAuth();
+  addMembers: async (groupId: string, emails: string[]) => {
+    const { user } = get();
+    if (!user) throw new Error('User not authenticated');
+
     try {
-      const userDoc = await getDoc(doc(db, 'users', email));
-      if (!userDoc.exists()) throw new Error('User not found');
-      
-      const userProfile = userDoc.data() as UserProfile;
+      // Validate emails
+      const validEmails = emails.filter(email => 
+        email && typeof email === 'string' && email.includes('@')
+      );
+
+      if (validEmails.length === 0) {
+        throw new Error('No valid email addresses provided');
+      }
+
+      // Check if users exist
+      const userChecks = await Promise.all(
+        validEmails.map(async (email) => {
+          const userDoc = await getDoc(doc(db, 'users', email));
+          return {
+            email,
+            exists: userDoc.exists()
+          };
+        })
+      );
+
+      const nonExistentUsers = userChecks
+        .filter(check => !check.exists)
+        .map(check => check.email);
+
+      if (nonExistentUsers.length > 0) {
+        throw new Error(`Users not found: ${nonExistentUsers.join(', ')}`);
+      }
+
+      // Get current group
       const groupRef = doc(db, 'groups', groupId);
-      
+      const groupDoc = await getDoc(groupRef);
+      const group = groupDoc.data();
+
+      if (!group) {
+        throw new Error('Group not found');
+      }
+
+      // Filter out emails that are already members
+      const newMembers = validEmails.filter(
+        email => !group.memberEmails?.includes(email)
+      );
+
+      if (newMembers.length === 0) {
+        throw new Error('All users are already members of this group');
+      }
+
+      // Add new members
       await updateDoc(groupRef, {
-        memberEmails: arrayUnion(email),
-        members: arrayUnion(userProfile)
+        memberEmails: arrayUnion(...newMembers)
       });
 
+      // Update local state
       set(state => ({
-        groups: state.groups.map(g => 
-          g.id === groupId 
+        groups: state.groups.map(g =>
+          g.id === groupId
             ? {
                 ...g,
-                memberEmails: [...g.memberEmails, email],
-                members: [...g.members, userProfile]
+                memberEmails: [...(g.memberEmails || []), ...newMembers]
               }
             : g
         ),
@@ -210,7 +262,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   removeMember: async (groupId: string, email: string) => {
-    const user = checkAuth();
+    const { user } = get();
+    if (!user) throw new Error('User not authenticated');
+
     try {
       const groupRef = doc(db, 'groups', groupId);
       const groupDoc = await getDoc(groupRef);
@@ -224,20 +278,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         throw new Error('Cannot remove yourself');
       }
 
-      const memberToRemove = group.members.find((m: UserProfile) => m.email === email);
-      
       await updateDoc(groupRef, {
-        memberEmails: arrayRemove(email),
-        members: arrayRemove(memberToRemove)
+        memberEmails: arrayRemove(email)
       });
 
       set(state => ({
-        groups: state.groups.map(g => 
-          g.id === groupId 
+        groups: state.groups.map(g =>
+          g.id === groupId
             ? {
                 ...g,
-                memberEmails: g.memberEmails.filter(e => e !== email),
-                members: g.members.filter(m => m.email !== email)
+                memberEmails: g.memberEmails.filter(e => e !== email)
               }
             : g
         ),
@@ -249,36 +299,61 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  searchUsers: async (query: string) => {
-    checkAuth();
+  searchUsers: async (searchQuery: string) => {
+    if (!searchQuery.trim() || searchQuery.length < 2) {
+      return [];
+    }
+
     try {
       const usersRef = collection(db, 'users');
-      const q = query(
+      const searchTerm = searchQuery.toLowerCase().trim();
+
+      // Create queries for both email and nickname
+      const emailQuery = query(
         usersRef,
-        where('email', '>=', query),
-        where('email', '<=', query + '\uf8ff')
+        where('email', '>=', searchTerm),
+        where('email', '<=', searchTerm + '\uf8ff')
       );
-      
-      const snapshot = await getDocs(q);
-      return snapshot.docs.map(doc => doc.data() as UserProfile);
+
+      const nicknameQuery = query(
+        usersRef,
+        where('nickname', '>=', searchTerm),
+        where('nickname', '<=', searchTerm + '\uf8ff')
+      );
+
+      // Execute both queries
+      const [emailResults, nicknameResults] = await Promise.all([
+        getDocs(emailQuery),
+        getDocs(nicknameQuery)
+      ]);
+
+      // Combine results and remove duplicates using a Map
+      const resultsMap = new Map();
+
+      [...emailResults.docs, ...nicknameResults.docs].forEach(doc => {
+        const data = doc.data();
+        if (!resultsMap.has(data.email)) {
+          resultsMap.set(data.email, data);
+        }
+      });
+
+      return Array.from(resultsMap.values());
     } catch (error) {
-      set({ error: (error as Error).message });
-      throw error;
+      console.error('Search users error:', error);
+      return []; // Return empty array instead of throwing to prevent UI errors
     }
   },
 
   shareLink: async (groupId: string, url: string, title: string, description: string) => {
-    const user = checkAuth();
-    try {
-      const groupRef = doc(db, 'groups', groupId);
-      const userDoc = await getDoc(doc(db, 'users', user.email!));
-      const userProfile = userDoc.data() as UserProfile;
+    const { user, userProfile } = get();
+    if (!user || !userProfile) throw new Error('User not authenticated');
 
-      const newLink: Link = {
+    try {
+      const newLink = {
         id: crypto.randomUUID(),
-        url,
-        title,
-        description,
+        url: url.trim(),
+        title: title.trim(),
+        description: description.trim(),
         author: user.email!,
         authorNickname: userProfile.nickname,
         timestamp: Date.now(),
@@ -286,6 +361,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         comments: []
       };
 
+      const groupRef = doc(db, 'groups', groupId);
       await updateDoc(groupRef, {
         links: arrayUnion(newLink)
       });
@@ -293,7 +369,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set(state => ({
         groups: state.groups.map(g =>
           g.id === groupId
-            ? { ...g, links: [...g.links, newLink] }
+            ? { ...g, links: [...(g.links || []), newLink] }
             : g
         ),
         error: null
@@ -305,7 +381,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   updateLink: async (groupId: string, linkId: string, updates: Partial<Link>) => {
-    const user = checkAuth();
+    const { user } = get();
+    if (!user) throw new Error('User not authenticated');
+
     try {
       const groupRef = doc(db, 'groups', groupId);
       const groupDoc = await getDoc(groupRef);
@@ -313,16 +391,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       if (!group) throw new Error('Group not found');
       
-      const linkIndex = group.links.findIndex((l: Link) => l.id === linkId);
+      const links = group.links || [];
+      const linkIndex = links.findIndex((l: Link) => l.id === linkId);
       if (linkIndex === -1) throw new Error('Link not found');
       
-      const link = group.links[linkIndex];
+      const link = links[linkIndex];
       if (link.author !== user.email) {
         throw new Error('Only the link author can edit it');
       }
 
       const updatedLink = { ...link, ...updates };
-      const newLinks = [...group.links];
+      const newLinks = [...links];
       newLinks[linkIndex] = updatedLink;
 
       await updateDoc(groupRef, { links: newLinks });
@@ -342,7 +421,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   toggleVote: async (groupId: string, linkId: string, voteType: 'up' | 'down') => {
-    const user = checkAuth();
+    const { user } = get();
+    if (!user) throw new Error('User not authenticated');
+
     try {
       const groupRef = doc(db, 'groups', groupId);
       const groupDoc = await getDoc(groupRef);
@@ -350,10 +431,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       if (!group) throw new Error('Group not found');
       
-      const linkIndex = group.links.findIndex((l: Link) => l.id === linkId);
+      const links = [...(group.links || [])];
+      const linkIndex = links.findIndex((l: Link) => l.id === linkId);
       if (linkIndex === -1) throw new Error('Link not found');
 
-      const link = group.links[linkIndex];
+      const link = { ...links[linkIndex] };
       const oppositeType = voteType === 'up' ? 'down' : 'up';
       
       // Remove from opposite vote type if exists
@@ -372,15 +454,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         link.votes[voteType].push(user.email!);
       }
 
-      const newLinks = [...group.links];
-      newLinks[linkIndex] = link;
-
-      await updateDoc(groupRef, { links: newLinks });
+      links[linkIndex] = link;
+      await updateDoc(groupRef, { links });
 
       set(state => ({
         groups: state.groups.map(g =>
           g.id === groupId
-            ? { ...g, links: newLinks }
+            ? { ...g, links }
             : g
         ),
         error: null
@@ -392,7 +472,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   addComment: async (groupId: string, linkId: string, content: string) => {
-    const user = checkAuth();
+    const { user, userProfile } = get();
+    if (!user || !userProfile) throw new Error('User not authenticated');
+
     try {
       const groupRef = doc(db, 'groups', groupId);
       const groupDoc = await getDoc(groupRef);
@@ -400,32 +482,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       if (!group) throw new Error('Group not found');
       
-      const linkIndex = group.links.findIndex((l: Link) => l.id === linkId);
+      const links = [...(group.links || [])];
+      const linkIndex = links.findIndex((l: Link) => l.id === linkId);
       if (linkIndex === -1) throw new Error('Link not found');
-
-      const userDoc = await getDoc(doc(db, 'users', user.email!));
-      const userProfile = userDoc.data() as UserProfile;
 
       const newComment = {
         id: crypto.randomUUID(),
-        content,
+        content: content.trim(),
         author: user.email!,
         authorNickname: userProfile.nickname,
         timestamp: Date.now()
       };
 
-      const link = group.links[linkIndex];
-      link.comments.push(newComment);
+      const link = { ...links[linkIndex] };
+      link.comments = [...(link.comments || []), newComment];
+      links[linkIndex] = link;
 
-      const newLinks = [...group.links];
-      newLinks[linkIndex] = link;
-
-      await updateDoc(groupRef, { links: newLinks });
+      await updateDoc(groupRef, { links });
 
       set(state => ({
         groups: state.groups.map(g =>
           g.id === groupId
-            ? { ...g, links: newLinks }
+            ? { ...g, links }
             : g
         ),
         error: null

@@ -36,8 +36,8 @@ export interface Group {
   avatar: string;
   createdBy: string;
   memberEmails: string[];
-  members: UserProfile[];
   links: Link[];
+  createdAt: number;
 }
 
 export interface ChatState {
@@ -47,22 +47,17 @@ export interface ChatState {
   error: string | null;
   groups: Group[];
   activeGroupId: string | null;
-  
-  // Auth actions
+  init: () => (() => void);
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, nickname: string) => Promise<void>;
   logout: () => Promise<void>;
   updateProfile: (nickname: string) => Promise<void>;
-  
-  // Group actions
   setActiveGroup: (groupId: string | null) => void;
   addGroup: (name: string) => Promise<void>;
-  updateGroupName: (groupId: string, name: string) => Promise<void>;
   addMember: (groupId: string, email: string) => Promise<void>;
+  addMembers: (groupId: string, emails: string[]) => Promise<void>;
   removeMember: (groupId: string, email: string) => Promise<void>;
   searchUsers: (query: string) => Promise<UserProfile[]>;
-  
-  // Link actions
   shareLink: (groupId: string, url: string, title: string, description: string) => Promise<void>;
   updateLink: (groupId: string, linkId: string, updates: Partial<Link>) => Promise<void>;
   toggleVote: (groupId: string, linkId: string, voteType: 'up' | 'down') => Promise<void>;
