@@ -1,15 +1,17 @@
 import React, { useState } from 'react';
-import { MessageSquare, ThumbsUp, ThumbsDown, Pencil, Share2, ChevronDown, ChevronUp } from 'lucide-react';
+import { MessageSquare, ThumbsUp, ThumbsDown, Pencil, Share2, ChevronDown, ChevronUp, Edit2 } from 'lucide-react';
 import { useChatStore } from '../store';
 import { Link } from '../types';
 import MemberList from './MemberList';
 import ShareLinkModal from './ShareLinkModal';
 import CommentsModal from './CommentsModal';
 import EditLinkModal from './EditLinkModal';
+import EditGroupModal from './EditGroupModal';
 
 export default function ChatArea() {
   const { activeGroupId, groups, user, toggleVote, addComment } = useChatStore();
   const [showShareModal, setShowShareModal] = useState(false);
+  const [showEditGroupModal, setShowEditGroupModal] = useState(false);
   const [selectedLink, setSelectedLink] = useState<Link | null>(null);
   const [linkToEdit, setLinkToEdit] = useState<Link | null>(null);
   const [expandedComments, setExpandedComments] = useState<string[]>([]);
@@ -18,7 +20,8 @@ export default function ChatArea() {
   const activeGroup = groups.find((g) => g.id === activeGroupId);
   if (!activeGroup || !user) return null;
 
-  // Sort links by popularity (upvotes - downvotes)
+  const isGroupOwner = activeGroup.createdBy === user.email;
+
   const sortedLinks = [...(activeGroup.links || [])].sort((a, b) => {
     const aScore = (a.votes.up.length - a.votes.down.length);
     const bScore = (b.votes.up.length - b.votes.down.length);
@@ -45,13 +48,24 @@ export default function ChatArea() {
       <div className="flex-1 flex flex-col">
         <div className="p-4 border-b border-gray-200">
           <div className="flex items-center justify-between">
-            <h2 className="text-xl font-semibold text-gray-800">{activeGroup.name}</h2>
+            <div className="flex items-center space-x-2">
+              <h2 className="text-xl font-semibold text-gray-800">{activeGroup.name}</h2>
+              {isGroupOwner && (
+                <button
+                  onClick={() => setShowEditGroupModal(true)}
+                  className="p-1 hover:bg-gray-100 rounded-full"
+                  title="Edit group name"
+                >
+                  <Edit2 className="w-4 h-4 text-gray-500" />
+                </button>
+              )}
+            </div>
             <button
               onClick={() => setShowShareModal(true)}
               className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 flex items-center space-x-2"
             >
               <Share2 className="w-4 h-4" />
-              <span>Share Link</span>
+              <span>Create Link</span>
             </button>
           </div>
         </div>
@@ -191,6 +205,13 @@ export default function ChatArea() {
         <ShareLinkModal
           groupId={activeGroup.id}
           onClose={() => setShowShareModal(false)}
+        />
+      )}
+
+      {showEditGroupModal && (
+        <EditGroupModal
+          group={activeGroup}
+          onClose={() => setShowEditGroupModal(false)}
         />
       )}
 
